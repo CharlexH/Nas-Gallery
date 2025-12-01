@@ -54,26 +54,52 @@
     </div>
 
     <script>
-        // 关闭灯箱的函数
+        // --- 1. 封装本地存储工具 (新增部分) ---
+        const LocalCache = {
+            //以此前缀开头，防止跟其他应用冲突
+            prefix: 'nas_gallery_', 
+            
+            get(path) {
+                try {
+                    const item = localStorage.getItem(this.prefix + path);
+                    return item ? JSON.parse(item) : null;
+                } catch (e) {
+                    console.warn('读取缓存失败', e);
+                    return null;
+                }
+            },
+            
+            set(path, data) {
+                try {
+                    // 将对象转为字符串存入浏览器本地数据库
+                    localStorage.setItem(this.prefix + path, JSON.stringify(data));
+                } catch (e) {
+                    // 如果缓存满了(通常5MB)，简单粗暴地清空一下，保证新数据能存入
+                    console.warn('缓存已满，执行清理');
+                    localStorage.clear();
+                }
+            }
+        };
+
+        // --- 2. 灯箱控制 (保持不变) ---
         function closeLightbox() {
             const lb = document.getElementById('lb');
             const lbCon = document.getElementById('lb-content');
             lb.classList.remove('active');
-            lbCon.innerHTML = ''; // 清空内容停止播放
+            lbCon.innerHTML = ''; 
         }
 
-        async function load(path = '') {
+        // --- 3. 渲染界面 (保持不变) ---
+        function render(path, data) {
             const parts = path.split('/').filter(Boolean);
-            let navHtml = `<span class="nav-item" onclick="load('')">🏠 首页</span>`;
+            let navHtml = `<span class="nav-item" onclick="navigateTo('')">🏠 首页</span>`;
             let acc = '';
             parts.forEach(p => {
                 acc += (acc ? '/' : '') + p;
-                navHtml += ` <span>/</span> <span class="nav-item" onclick="load('${acc.replace(/'/g, "\\'")}')">${p}</span>`;
+                navHtml += ` <span>/</span> <span class="nav-item" onclick="navigateTo('${acc.replace(/'/g, "\\'")}')">${p}</span>`;
             });
             document.getElementById('nav').innerHTML = navHtml;
 
-            const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
-            const data = await res.json();
             const grid = document.getElementById('grid');
             grid.innerHTML = '';
 
@@ -86,7 +112,6 @@
                 } else if (item.type.startsWith('image/')) {
                     content = `<img class="thumb" src="/api/thumb?path=${encodedPath}" loading="lazy">`;
                 } else if (item.type.startsWith('video/')) {
-                    // 改动：视频现在也请求缩略图，并加上角标
                     content = `
                         <div style="position:relative">
                             <img class="thumb" src="/api/thumb?path=${encodedPath}" loading="lazy">
@@ -99,7 +124,7 @@
 
                 if (item.isDir) {
                     el = document.createElement('div');
-                    el.onclick = () => load(item.path);
+                    el.onclick = () => navigateTo(item.path);
                 } else {
                     el = document.createElement('a');
                     el.href = `/api/raw?path=${encodedPath}`;
@@ -110,7 +135,6 @@
                             const lbCon = document.getElementById('lb-content');
                             lb.classList.add('active');
                             if(item.type.startsWith('video/')) {
-                                // 自动播放
                                 lbCon.innerHTML = `<video src="${el.href}" controls autoplay style="max-width:90vw; max-height:90vh"></video>`;
                             } else {
                                 lbCon.innerHTML = `<img src="${el.href}">`;
@@ -124,7 +148,56 @@
                 grid.appendChild(el);
             });
         }
-        load();
+
+        // --- 4. 核心：获取数据 (SWR + LocalStorage) ---
+        async function fetchAndRender(path) {
+            // A. 优先从浏览器本地数据库读取
+            const cachedData = LocalCache.get(path);
+
+            // 如果本地有，立刻渲染（即使断网也能看到旧列表）
+            if (cachedData) {
+                console.log(`⚡️ [Local] 命中缓存: ${path || 'root'}`);
+                render(path, cachedData);
+            }
+
+            // B. 后台静默发起网络请求
+            try {
+                const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+                const newData = await res.json();
+                
+                // C. 对比数据：如果不一致，更新界面并写入本地存储
+                if (!cachedData || JSON.stringify(cachedData) !== JSON.stringify(newData)) {
+                    console.log(`🔄 [Network] 数据更新: ${path || 'root'}`);
+                    LocalCache.set(path, newData); // 写入 LocalStorage
+                    render(path, newData);
+                }
+            } catch (err) {
+                console.error('加载失败，可能网络中断:', err);
+                // 如果本地也没数据，网络也挂了，才显示错误
+                if (!cachedData) {
+                    document.getElementById('grid').innerHTML = '<div style="padding:20px;color:#888">加载失败，请检查网络</div>';
+                }
+            }
+        }
+
+        // --- 5. 导航与初始化 (保持不变) ---
+        function navigateTo(path) {
+            const url = path ? `?path=${encodeURIComponent(path)}` : window.location.pathname;
+            history.pushState({ path: path }, '', url);
+            fetchAndRender(path);
+        }
+
+        window.onpopstate = (event) => {
+            const path = event.state ? event.state.path : '';
+            fetchAndRender(path);
+        };
+
+        (function init() {
+            const params = new URLSearchParams(window.location.search);
+            const currentPath = params.get('path') || '';
+            history.replaceState({ path: currentPath }, '', window.location.href);
+            fetchAndRender(currentPath);
+        })();
     </script>
 </body>
 </html>

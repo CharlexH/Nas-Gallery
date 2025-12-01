@@ -1,0 +1,25 @@
+version: '3'
+services:
+  gallery:
+    build: .
+    container_name: nas-gallery-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # 左边是群晖访问端口，可以按需修改
+    environment:
+      # 这里填写 Docker 内部看到的路径，不要改
+      - NAS_PATH=/data
+    volumes:
+      # 1. 核心：把群晖当前目录下的 public 文件夹挂载进去
+      # 这样你修改群晖里的 html，容器里也会跟着变！
+      - ./public:/app/public
+      
+      # 2. (可选) 如果你也想随时改 server.js，把这行也加上
+      - ./server.js:/app/server.js
+
+      # 3. 缓存目录：映射出来，防止重启 Docker 后缩略图丢失，避免重复生成
+      - ./cache:/app/cache
+
+      # 4. 你的照片文件夹：把群晖实际的照片路径挂载到容器的 /data
+      # 请把 /volume1/Photos 改成你 NAS 上实际存照片的路径
+      - /volume2/JAdv:/data:ro
